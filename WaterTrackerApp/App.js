@@ -1,28 +1,72 @@
-// App.js
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, TextInput, Platform, Image } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, TextInput, Platform, Image, KeyboardAvoidingView, ScrollView, Modal } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Slider from '@react-native-community/slider';
+import * as Notifications from 'expo-notifications';
+import { Animated } from 'react-native';
 
 export default function App() {
   const [waterIntake, setWaterIntake] = useState(0);
   const [customAmount, setCustomAmount] = useState('');
   const [sliderValue, setSliderValue] = useState(200);
+  const [goal, setGoal] = useState(2000);
+  const [modalVisible, setModalVisible] = useState(false);
+  const [streak, setStreak] = useState(0);
+  const progress = Math.min(waterIntake / goal, 1);
+  const fadeAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     loadWaterIntake();
+    loadGoal();
+    loadStreak();
+    setupDailyReset();
+    Notifications.requestPermissionsAsync();
+    scheduleReminder();
   }, []);
 
   useEffect(() => {
-    saveWaterIntake();
+    const timeoutId = setTimeout(() => saveWaterIntake(), 500);
+    return () => clearTimeout(timeoutId);
   }, [waterIntake]);
+
+  const setupDailyReset = () => {
+    const now = new Date();
+    const nextMidnight = new Date(now);
+    nextMidnight.setHours(24, 0, 0, 0);
+    const timeout = setTimeout(() => {
+      if (waterIntake >= goal) {
+        setStreak(prev => prev + 1);
+        saveStreak(prev => prev + 1);
+      } else {
+        setStreak(0);
+        saveStreak(0);
+      }
+      setWaterIntake(0);
+    }, nextMidnight - now);
+    return () => clearTimeout(timeout);
+  };
+
+  const scheduleReminder = async () => {
+    await Notifications.cancelAllScheduledNotificationsAsync();
+    for (let i = 1; i <= 6; i++) {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: "Time to drink water! 💧",
+          body: "Stay hydrated, cutie! 💕",
+        },
+        trigger: {
+          hour: 9 + i * 2,
+          minute: 0,
+          repeats: true,
+        },
+      });
+    }
+  };
 
   const loadWaterIntake = async () => {
     try {
       const value = await AsyncStorage.getItem('@waterIntake');
-      if (value !== null) {
-        setWaterIntake(parseInt(value));
-      }
+      if (value !== null) setWaterIntake(parseInt(value));
     } catch (e) {
       console.error('Failed to load intake.', e);
     }
@@ -36,6 +80,32 @@ export default function App() {
     }
   };
 
+  const loadGoal = async () => {
+    try {
+      const value = await AsyncStorage.getItem('@waterGoal');
+      if (value !== null) setGoal(parseInt(value));
+    } catch (e) {
+      console.error('Failed to load goal.', e);
+    }
+  };
+
+  const loadStreak = async () => {
+    try {
+      const value = await AsyncStorage.getItem('@streak');
+      if (value !== null) setStreak(parseInt(value));
+    } catch (e) {
+      console.error('Failed to load streak.', e);
+    }
+  };
+
+  const saveStreak = async (value) => {
+    try {
+      await AsyncStorage.setItem('@streak', value.toString());
+    } catch (e) {
+      console.error('Failed to save streak.', e);
+    }
+  };
+
   const addWater = (amount) => {
     setWaterIntake(prev => prev + amount);
   };
@@ -45,74 +115,102 @@ export default function App() {
     if (!isNaN(amount) && amount > 0) {
       addWater(amount);
       setCustomAmount('');
+      setModalVisible(false);
     } else {
       Alert.alert('Invalid Input', 'Please enter a valid number greater than 0.');
     }
   };
 
   const resetIntake = () => {
-    Alert.alert(
-      'Reset Intake',
-      'Are you sure you want to reset your daily water intake?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Yes', onPress: () => setWaterIntake(0) }
-      ]
-    );
+    Alert.alert('Reset Intake', 'Are you sure you want to reset your daily water intake?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Yes', onPress: () => setWaterIntake(0) }
+    ]);
   };
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Daily Water Tracker</Text>
-      <Text style={styles.intake}>{waterIntake} ml</Text>
+    <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={{ flex: 1, backgroundColor: '#FEE1F1' }}>
+      <ScrollView contentContainerStyle={styles.scrollContainer} style={{ flex: 1 }}>
+        <Animated.View style={{ opacity: fadeAnim }}>
+          <Text style={styles.title}>Daily Water Tracker</Text>
+          <Text style={styles.intake}>{waterIntake} ml</Text>
 
-      <View style={styles.buttonGroup}>
-        <TouchableOpacity style={styles.button} onPress={() => addWater(250)}>
-          <Image source={{ uri: 'https://images.emojiterra.com/google/android-12l/512px/1f964.png' }} style={styles.imageIcon} />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.button} onPress={() => addWater(500)}>
-          <Image source={{ uri: 'https://cdn-icons-png.flaticon.com/512/8576/8576345.png' }} style={styles.imageIcon} />
-        </TouchableOpacity>
-      </View>
+          <View style={styles.progressContainer}>
+            <View style={[styles.progressBar, { width: `${progress * 100}%` }]} />
+          </View>
+          <Text style={styles.progressText}>{Math.round(progress * 100)}% of {goal} ml goal</Text>
+          <Text style={styles.streak}>🔥 Streak: {streak} days</Text>
 
-      <Text style={styles.sectionTitle}>Add Custom Amount</Text>
-      <TextInput
-        style={styles.input}
-        keyboardType="numeric"
-        placeholder="Enter amount in ml"
-        value={customAmount}
-        onChangeText={setCustomAmount}
-      />
-      <TouchableOpacity style={styles.customButton} onPress={handleCustomAdd}>
-        <Text style={styles.buttonText}>Add Custom Amount</Text>
-      </TouchableOpacity>
+          <View style={styles.buttonGroup}>
+            <TouchableOpacity style={styles.button} onPress={() => addWater(250)}>
+              <Image source={{ uri: 'https://images.emojiterra.com/google/android-12l/512px/1f964.png' }} style={styles.imageIcon} />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.button} onPress={() => addWater(500)}>
+              <Image source={{ uri: 'https://cdn-icons-png.flaticon.com/512/8576/8576345.png' }} style={styles.imageIcon} />
+            </TouchableOpacity>
+          </View>
 
-      <Text style={styles.sectionTitle}>Or Use Slider: {sliderValue} ml</Text>
-      <Slider
-        style={{ width: 300, height: 40 }}
-        minimumValue={50}
-        maximumValue={1000}
-        step={50}
-        value={sliderValue}
-        onValueChange={setSliderValue}
-        minimumTrackTintColor="#f06292"
-        maximumTrackTintColor="#f8bbd0"
-        thumbTintColor="#ec407a"
-      />
-      <TouchableOpacity style={styles.customButton} onPress={() => addWater(sliderValue)}>
-        <Text style={styles.buttonText}>Add from Slider</Text>
-      </TouchableOpacity>
+          <TouchableOpacity style={styles.customButton} onPress={() => setModalVisible(true)}>
+            <Text style={styles.buttonText}>More Options</Text>
+          </TouchableOpacity>
 
-      <TouchableOpacity style={styles.resetButton} onPress={resetIntake}>
-        <Text style={styles.resetText}>Reset</Text>
-      </TouchableOpacity>
-    </View>
+          <Modal
+            transparent={true}
+            visible={modalVisible}
+            animationType="slide"
+            onRequestClose={() => setModalVisible(false)}
+          >
+            <View style={styles.modalContainer}>
+              <View style={styles.modalContent}>
+                <Text style={styles.sectionTitle}>Add Custom Amount</Text>
+                <TextInput
+                  style={styles.input}
+                  keyboardType="numeric"
+                  placeholder="Enter amount in ml"
+                  value={customAmount}
+                  onChangeText={setCustomAmount}
+                />
+                <TouchableOpacity style={styles.customButton} onPress={handleCustomAdd}>
+                  <Text style={styles.buttonText}>Add Custom Amount</Text>
+                </TouchableOpacity>
+
+                <Text style={styles.sectionTitle}>Or Use Slider: {sliderValue} ml</Text>
+                <Slider
+                  style={{ width: 250, height: 40 }}
+                  minimumValue={50}
+                  maximumValue={1000}
+                  step={50}
+                  value={sliderValue}
+                  onValueChange={setSliderValue}
+                  minimumTrackTintColor="#f06292"
+                  maximumTrackTintColor="#f8bbd0"
+                  thumbTintColor="#ec407a"
+                />
+                <TouchableOpacity style={styles.customButton} onPress={() => {
+                  addWater(sliderValue);
+                  setModalVisible(false);
+                }}>
+                  <Text style={styles.buttonText}>Add from Slider</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setModalVisible(false)} style={styles.resetButton}>
+                  <Text style={styles.resetText}>Close</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </Modal>
+
+          <TouchableOpacity style={styles.resetButton} onPress={resetIntake}>
+            <Text style={styles.resetText}>Reset</Text>
+          </TouchableOpacity>
+        </Animated.View>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
+  scrollContainer: {
+    flexGrow: 1,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#FEE1F1',
@@ -127,8 +225,31 @@ const styles = StyleSheet.create({
   intake: {
     fontSize: 48,
     fontWeight: 'bold',
-    marginBottom: 30,
+    marginBottom: 10,
     color: '#ad1457'
+  },
+  progressContainer: {
+    height: 20,
+    width: '80%',
+    backgroundColor: '#eee',
+    borderRadius: 10,
+    overflow: 'hidden',
+    marginBottom: 10
+  },
+  progressBar: {
+    height: '100%',
+    backgroundColor: '#ab47bc',
+  },
+  progressText: {
+    marginBottom: 10,
+    color: '#6a1b9a',
+    fontWeight: 'bold'
+  },
+  streak: {
+    marginBottom: 20,
+    color: '#d81b60',
+    fontWeight: 'bold',
+    fontSize: 16
   },
   buttonGroup: {
     flexDirection: 'row',
@@ -147,7 +268,8 @@ const styles = StyleSheet.create({
   },
   buttonText: {
     color: '#fff',
-    fontSize: 28,
+    fontSize: 20,
+    textAlign: 'center'
   },
   sectionTitle: {
     fontSize: 18,
@@ -173,7 +295,7 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   resetButton: {
-    marginTop: 30,
+    marginTop: 20,
     padding: 10,
     backgroundColor: '#f48fb1',
     borderRadius: 10,
@@ -182,4 +304,16 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 16,
   },
+  modalContainer: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.3)',
+    justifyContent: 'center',
+    alignItems: 'center'
+  },
+  modalContent: {
+    backgroundColor: '#FEE1F1',
+    padding: 20,
+    borderRadius: 15,
+    alignItems: 'center'
+  }
 });
