@@ -4,11 +4,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Slider from '@react-native-community/slider';
 import * as Notifications from 'expo-notifications';
 import { Animated } from 'react-native';
+import * as Haptics from 'expo-haptics';
+
 
 export default function App() {
   const [waterIntake, setWaterIntake] = useState(0);
   const [customAmount, setCustomAmount] = useState('');
   const [sliderValue, setSliderValue] = useState(200);
+  const [intakeLog, setIntakeLog] = useState([]);
   const [goal, setGoal] = useState(2000);
   const [modalVisible, setModalVisible] = useState(false);
   const [streak, setStreak] = useState(0);
@@ -20,48 +23,141 @@ export default function App() {
     loadGoal();
     loadStreak();
     setupDailyReset();
-    Notifications.requestPermissionsAsync();
-    scheduleReminder();
+    loadTodayLog();
+    loadHistory();
+  
+    (async () => {
+      const { status } = await Notifications.getPermissionsAsync();
+      if (status !== 'granted') {
+        await Notifications.requestPermissionsAsync();
+      }
+      scheduleReminder();
+    })();
   }, []);
 
+  const removeLogEntry = (index) => {
+    const newLog = [...intakeLog];
+    const removed = newLog.splice(index, 1)[0];
+    setIntakeLog(newLog);
+    setWaterIntake(prev => prev - removed.amount);
+  };
+
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: false,
+      shouldSetBadge: false,
+    }),
+  });
+  
+  
+  
+
   useEffect(() => {
-    const timeoutId = setTimeout(() => saveWaterIntake(), 500);
+    const timeoutId = setTimeout(() => {
+      saveWaterIntake();
+      saveTodayLog();
+      updateHistory();
+    }, 500);
     return () => clearTimeout(timeoutId);
   }, [waterIntake]);
+
+  const saveTodayLog = async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    try {
+      await AsyncStorage.setItem(`@log_${today}`, JSON.stringify(intakeLog));
+    } catch (e) {
+      console.error("Failed to save log", e);
+    }
+  };
+  
+  const updateHistory = async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    try {
+      await AsyncStorage.setItem(`@history_${today}`, waterIntake.toString());
+    } catch (e) {
+      console.error("Failed to update history", e);
+    }
+  };
+
+  const loadTodayLog = async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    try {
+      const val = await AsyncStorage.getItem(`@log_${today}`);
+      if (val) setIntakeLog(JSON.parse(val));
+    } catch (e) {
+      console.error("Log load failed", e);
+    }
+  };
+  
+  const loadHistory = async () => {
+    const days = [...Array(7)].map((_, i) => {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      return d.toISOString().slice(0, 10);
+    });
+  
+    const historyData = {};
+    for (const day of days) {
+      const val = await AsyncStorage.getItem(`@history_${day}`);
+      historyData[day] = parseInt(val) || 0;
+    }
+    setHistory(historyData);
+  };
+  
 
   const setupDailyReset = () => {
     const now = new Date();
     const nextMidnight = new Date(now);
     nextMidnight.setHours(24, 0, 0, 0);
-    const timeout = setTimeout(() => {
+  
+    const timeUntilMidnight = nextMidnight - now;
+  
+    setTimeout(async () => {
       if (waterIntake >= goal) {
-        setStreak(prev => prev + 1);
-        saveStreak(prev => prev + 1);
+        const newStreak = streak + 1;
+        setStreak(newStreak);
+        await saveStreak(newStreak);
       } else {
         setStreak(0);
-        saveStreak(0);
+        await saveStreak(0);
       }
       setWaterIntake(0);
-    }, nextMidnight - now);
-    return () => clearTimeout(timeout);
+      await saveWaterIntake();
+      setupDailyReset(); // 🪄 Reschedule for next day
+    }, timeUntilMidnight);
+    
   };
+  
 
   const scheduleReminder = async () => {
     await Notifications.cancelAllScheduledNotificationsAsync();
-    for (let i = 1; i <= 6; i++) {
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title: "Time to drink water! 💧",
-          body: "Stay hydrated, cutie! 💕",
-        },
-        trigger: {
-          hour: 9 + i * 2,
-          minute: 0,
-          repeats: true,
-        },
-      });
+  
+    const now = new Date();
+    const notifications = [];
+  
+    for (let i = 1; i <= 12; i++) { // from 9 AM to 9 PM, every hour
+      const hour = 8 + i; // 9 AM to 9 PM
+      const trigger = new Date(now);
+      trigger.setHours(hour, 0, 0, 0);
+  
+      // Skip if this time already passed today
+      if (trigger > now) {
+        notifications.push({
+          content: {
+            title: "💧Time to drink water!",
+            body: "GEEHEEE WASSERR TRINKEENN ANIKAA! 💕",
+          },
+          trigger,
+        });
+      }
+    }
+  
+    for (const note of notifications) {
+      await Notifications.scheduleNotificationAsync(note);
     }
   };
+  
 
   const loadWaterIntake = async () => {
     try {
@@ -107,8 +203,12 @@ export default function App() {
   };
 
   const addWater = (amount) => {
-    setWaterIntake(prev => prev + amount);
-  };
+  setWaterIntake(prev => prev + amount);
+  const newLog = [...intakeLog, { amount, time: new Date().toISOString() }];
+  setIntakeLog(newLog);
+  Haptics.selectionAsync(); // 💥 haptic
+};
+
 
   const handleCustomAdd = () => {
     const amount = parseInt(customAmount);
@@ -202,6 +302,26 @@ export default function App() {
           <TouchableOpacity style={styles.resetButton} onPress={resetIntake}>
             <Text style={styles.resetText}>Reset</Text>
           </TouchableOpacity>
+          <Text style={styles.sectionTitle}>Today’s Log</Text>
+          {intakeLog.map((entry, index) => (
+  <View key={index} style={styles.logItem}>
+    <View style={styles.logTextContainer}>
+      <Text style={{ fontSize: 16, fontWeight: '600' }}>{entry.amount} ml</Text>
+      <Text style={{ fontSize: 12, color: '#555' }}>
+        {new Date(entry.time).toLocaleTimeString()}
+      </Text>
+    </View>
+    <TouchableOpacity
+      onPress={() => removeLogEntry(index)}
+      style={styles.logRemoveButton}
+    >
+      <Text style={styles.logRemoveText}>✕</Text>
+    </TouchableOpacity>
+  </View>
+))}
+
+
+
         </Animated.View>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -315,5 +435,33 @@ const styles = StyleSheet.create({
     padding: 20,
     borderRadius: 15,
     alignItems: 'center'
+  },
+  logItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#fce4ec',
+    padding: 12,
+    marginVertical: 6,
+    borderRadius: 10,
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  logTextContainer: {
+    flexDirection: 'column',
+  },
+  logRemoveButton: {
+    padding: 4,
+    backgroundColor: '#e57373',
+    borderRadius: 8,
+  },
+  logRemoveText: {
+    color: 'white',
+    fontWeight: 'bold',
+    fontSize: 16,
   }
+  
 });
